@@ -1,0 +1,2 @@
+pending_approval = {}
+notifications = []

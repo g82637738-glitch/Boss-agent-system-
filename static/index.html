@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Boss Agent — Globe</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    html,body{width:100%;height:100%;overflow:hidden;background:#000000;color:#ffbf7f;font-family:Inter,system-ui,sans-serif}
+    body{background:#000000}
+    .topbar{position:absolute;top:0;left:0;width:100%;display:flex;align-items:center;justify-content:space-between;padding:18px 28px;z-index:20}
+    .brand{color:#ff8d2b;font-size:0.95rem;font-weight:700;letter-spacing:0.26em;text-transform:uppercase;opacity:0.92}
+    .nav-links{display:flex;gap:18px}
+    .nav-links a{color:#ffcc88;text-decoration:none;font-size:0.95rem;opacity:0.8;transition:opacity 0.2s ease}
+    .nav-links a:hover{opacity:1}
+    #canvas-container{position:absolute;inset:0;touch-action:none}
+    #state-label{position:absolute;left:50%;bottom:28px;transform:translateX(-50%);color:#ffb566;font-family:Menlo,monospace;font-size:0.92rem;letter-spacing:0.18em;text-transform:uppercase;z-index:10;pointer-events:none}
+    #approval-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.85);display:none;align-items:center;justify-content:center;z-index:100}
+    #approval-card{width:min(540px,calc(100% - 40px));background:#070707;border:1px solid #ff6600;border-radius:24px;box-shadow:0 0 60px rgba(255,102,0,0.18);padding:28px;color:#fff}
+    #approval-card h2{margin:0 0 16px;font-size:24px;color:#ff8c00;text-align:center}
+    #approval-card .field-label{font-size:12px;text-transform:uppercase;color:#ff9c4d;letter-spacing:0.14em;margin-bottom:6px}
+    #approval-card .field-value{background:rgba(255,102,0,0.08);border:1px solid rgba(255,102,0,0.18);border-radius:14px;padding:14px 16px;color:#ffe5c4;line-height:1.5;word-break:break-word}
+    #approval-buttons{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:24px}
+    .approval-button{min-height:60px;border:none;border-radius:16px;font-size:17px;font-weight:700;cursor:pointer;color:#fff;transition:transform 0.2s ease,filter 0.2s ease}
+    .approval-button:active{transform:scale(0.98)}
+    .approve-button{background:#ff6600;box-shadow:0 12px 28px rgba(255,102,0,0.28)}
+    .reject-button{background:#8b1200;box-shadow:0 12px 28px rgba(204,34,0,0.24)}
+    #notification-strip{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);max-width:calc(100% - 28px);min-height:44px;background:rgba(0,0,0,0.82);border:1px solid rgba(255,102,0,0.18);border-radius:999px;color:#ffb766;padding:12px 18px;font-size:0.95rem;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity 0.3s ease,transform 0.3s ease;z-index:15}
+    #notification-strip.visible{opacity:1;transform:translateX(-50%) translateY(0)}
+    a,button{font-family:inherit}
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand">BOSS AGENT</div>
+    <div class="nav-links">
+      <a href="/">Home</a>
+      <a href="#chat">Chat</a>
+      <a href="/dashboard">Dashboard</a>
+    </div>
+  </div>
+  <div id="canvas-container"></div>
+  <div id="state-label">BOSS AGENT READY</div>
+
+  <div id="approval-overlay">
+    <div id="approval-card">
+      <h2>⚡ Approval Needed</h2>
+      <div class="field-label">Action</div>
+      <div class="field-value" id="approval-action">...</div>
+      <div style="margin-top:18px;">
+        <div class="field-label">Reason</div>
+        <div class="field-value" id="approval-reason">...</div>
+      </div>
+      <div id="approval-buttons">
+        <button class="approval-button approve-button" id="approve-button">✅ Approve</button>
+        <button class="approval-button reject-button" id="reject-button">❌ Reject</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="notification-strip"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+    const container = document.getElementById('canvas-container');
+    const stateLabel = document.getElementById('state-label');
+    const approvalOverlay = document.getElementById('approval-overlay');
+    const approvalAction = document.getElementById('approval-action');
+    const approvalReason = document.getElementById('approval-reason');
+    const approveButton = document.getElementById('approve-button');
+    const rejectButton = document.getElementById('reject-button');
+    const notificationStrip = document.getElementById('notification-strip');
+
+    let currentState = 'idle';
+    const stateText = {
+      idle: 'BOSS AGENT READY',
+      listening: 'LISTENING...',
+      thinking: 'PROCESSING...',
+      speaking: 'SPEAKING...'
+    };
+
+    const stateConfig = {
+      idle: { sphereSpeed: 0.002, ringSpeed: [0.002, -0.0012, 0.001], laserIntensity: 0.3, particleSpeed: 0.0005, laserSpin: 0.001 },
+      listening: { sphereSpeed: 0.008, ringSpeed: [0.01, -0.007, 0.006], laserIntensity: 1.0, particleSpeed: 0.0045, laserSpin: 0.003 },
+      thinking: { sphereSpeed: 0.004, ringSpeed: [-0.005, 0.004, -0.003], laserIntensity: 0.7, particleSpeed: 0.002, laserSpin: 0.007 },
+      speaking: { sphereSpeed: 0.01, ringSpeed: [0.014, -0.01, 0.008], laserIntensity: 1.0, particleSpeed: 0.006, laserSpin: 0.005 }
+    };
+
+    function setState(next) {
+      if (!stateText[next]) return;
+      currentState = next;
+      stateLabel.textContent = stateText[next];
+    }
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 0, 8);
+
+    const useAntialias = (window.devicePixelRatio || 1) <= 1.5;
+    const renderer = new THREE.WebGLRenderer({ antialias: useAntialias });
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    renderer.setPixelRatio(dpr);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setClearColor(0x000000, 1);
+    container.appendChild(renderer.domElement);
+    let animationId = null;
+    // WebGL availability check
+    let gl = null;
+    try { gl = renderer.getContext(); } catch (e) { gl = null; }
+    if (!gl) {
+      const msg = document.createElement('div');
+      msg.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#ffb366;background:#000;z-index:50;font-family:Menlo,monospace;font-size:18px';
+      msg.textContent = 'WebGL not available on this device. Please use a modern browser.';
+      container.appendChild(msg);
+    }
+
+    const ambientLight = new THREE.AmbientLight(0xffcc99, 0.6);
+    scene.add(ambientLight);
+    const pointLight = new THREE.PointLight(0xffaa33, 1.3, 25);
+    pointLight.position.set(5, 5, 8);
+    scene.add(pointLight);
+
+    const isMobile = window.innerWidth < 600 || (navigator.userAgent && /Mobi|Android/i.test(navigator.userAgent));
+    const sphereDetail = isMobile ? 1 : 2;
+    const sphereGeo = new THREE.IcosahedronGeometry(2, sphereDetail);
+    const sphereMat = new THREE.MeshStandardMaterial({
+      color: 0xff8800,
+      emissive: 0xff7700,
+      emissiveIntensity: 1.4,
+      transparent: true,
+      opacity: 0.22,
+      wireframe: true
+    });
+    const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+    scene.add(sphere);
+
+    const glowGeo = new THREE.IcosahedronGeometry(2.15, sphereDetail);
+    const glowMat = new THREE.MeshBasicMaterial({ color: 0xff6600, transparent: true, opacity: 0.1 });
+    const sphereGlow = new THREE.Mesh(glowGeo, glowMat);
+    scene.add(sphereGlow);
+
+    const ringConfigs = [
+      { radius: 2.8, tube: 0.01, color: 0xff6600, tilt: Math.PI / 4 },
+      { radius: 3.2, tube: 0.008, color: 0xffb04d, tilt: -Math.PI / 6 },
+      { radius: 3.6, tube: 0.006, color: 0xff8a33, tilt: Math.PI / 9 }
+    ];
+
+    const rings = ringConfigs.map(cfg => {
+      // lower segment counts for better mobile performance
+      const geo = new THREE.TorusGeometry(cfg.radius, cfg.tube, 8, 64);
+      const mat = new THREE.MeshBasicMaterial({ color: cfg.color, transparent: true, opacity: 0.65 });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.rotation.x = cfg.tilt;
+      scene.add(mesh);
+      return mesh;
+    });
+
+    const particleCount = isMobile ? 300 : 800;
+    const particleGeo = new THREE.BufferGeometry();
+    const positions = new Float32Array(particleCount * 3);
+    const velocities = new Float32Array(particleCount * 3);
+    for (let i = 0; i < particleCount; i++) {
+      const theta = Math.acos(THREE.MathUtils.randFloat(-1, 1));
+      const phi = THREE.MathUtils.randFloat(0, Math.PI * 2);
+      const radius = THREE.MathUtils.randFloat(4, 6);
+      const x = Math.sin(theta) * Math.cos(phi) * radius;
+      const y = Math.sin(theta) * Math.sin(phi) * radius;
+      const z = Math.cos(theta) * radius;
+      positions[i * 3] = x;
+      positions[i * 3 + 1] = y;
+      positions[i * 3 + 2] = z;
+      velocities[i * 3] = x * 0.00008;
+      velocities[i * 3 + 1] = y * 0.00008;
+      velocities[i * 3 + 2] = z * 0.00008;
+    }
+    particleGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const particleMat = new THREE.PointsMaterial({ color: 0xffb366, size: 0.04, transparent: true, opacity: 0.9 });
+    const particles = new THREE.Points(particleGeo, particleMat);
+    scene.add(particles);
+
+    const laserGroup = new THREE.Group();
+    const laserLines = [];
+    for (let i = 0; i < 8; i++) {
+      const dir = new THREE.Vector3(
+        THREE.MathUtils.randFloatSpread(1),
+        THREE.MathUtils.randFloatSpread(1),
+        THREE.MathUtils.randFloatSpread(1)
+      ).normalize();
+      const len = THREE.MathUtils.randFloat(3, 5);
+      const points = [new THREE.Vector3(0, 0, 0), dir.clone().multiplyScalar(len)];
+      const geom = new THREE.BufferGeometry().setFromPoints(points);
+      const mat = new THREE.LineBasicMaterial({ color: 0xff9922, transparent: true, opacity: 0.5 });
+      const line = new THREE.Line(geom, mat);
+      line.userData = { phase: Math.random() * Math.PI * 2, dir, len };
+      laserGroup.add(line);
+      laserLines.push(line);
+    }
+    scene.add(laserGroup);
+
+    const clock = new THREE.Clock();
+
+    function resize() {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      renderer.setSize(width, height);
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    function updateParticles(delta) {
+      const positions = particleGeo.attributes.position.array;
+      for (let i = 0; i < particleCount; i++) {
+        const idx = i * 3;
+        positions[idx] += velocities[idx] * delta * 60 * (currentState === 'listening' ? 4 : currentState === 'speaking' ? 6 : currentState === 'thinking' ? 2 : 1);
+        positions[idx + 1] += velocities[idx + 1] * delta * 60 * (currentState === 'listening' ? 4 : currentState === 'speaking' ? 6 : currentState === 'thinking' ? 2 : 1);
+        positions[idx + 2] += velocities[idx + 2] * delta * 60 * (currentState === 'listening' ? 4 : currentState === 'speaking' ? 6 : currentState === 'thinking' ? 2 : 1);
+        const x = positions[idx];
+        const y = positions[idx + 1];
+        const z = positions[idx + 2];
+        const radius = Math.sqrt(x * x + y * y + z * z);
+        if (radius > 6.4) {
+          const theta = Math.acos(THREE.MathUtils.randFloat(-1, 1));
+          const phi = THREE.MathUtils.randFloat(0, Math.PI * 2);
+          const newRadius = THREE.MathUtils.randFloat(4, 5.5);
+          positions[idx] = Math.sin(theta) * Math.cos(phi) * newRadius;
+          positions[idx + 1] = Math.sin(theta) * Math.sin(phi) * newRadius;
+          positions[idx + 2] = Math.cos(theta) * newRadius;
+        }
+      }
+      particleGeo.attributes.position.needsUpdate = true;
+    }
+
+    function updateLasers(time) {
+      const config = stateConfig[currentState];
+      laserLines.forEach((line, index) => {
+        const opacity = 0.3 + 0.7 * Math.abs(Math.sin(time * (2.8 + index * 0.2) * (currentState === 'speaking' ? 4 : currentState === 'listening' ? 3.5 : currentState === 'thinking' ? 2 : 1)) + line.userData.phase) * config.laserIntensity;
+        line.material.opacity = Math.min(1, Math.max(0.3, opacity));
+      });
+      laserGroup.rotation.y += config.laserSpin * 2;
+    }
+
+    function animate() {
+      const elapsed = clock.getElapsedTime();
+      const delta = clock.getDelta();
+      const config = stateConfig[currentState];
+
+      sphere.rotation.y += config.sphereSpeed;
+      sphereGlow.rotation.y += config.sphereSpeed * 0.92;
+      rings.forEach((ring, index) => {
+        ring.rotation.z += config.ringSpeed[index];
+      });
+
+      const cameraRadius = 8;
+      camera.position.x = Math.sin(elapsed * 0.17) * 0.3;
+      camera.position.y = Math.sin(elapsed * 0.11) * 0.15;
+      camera.position.z = cameraRadius + Math.cos(elapsed * 0.13) * 0.04;
+      camera.lookAt(0, 0, 0);
+
+      updateParticles(delta);
+      updateLasers(elapsed);
+      renderer.render(scene, camera);
+      animationId = requestAnimationFrame(animate);
+    }
+
+    // handle lost context gracefully
+    renderer.domElement.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      console.warn('WebGL context lost');
+      if (animationId) cancelAnimationFrame(animationId);
+      const msg = document.createElement('div');
+      msg.id = 'webgl-lost-msg';
+      msg.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#ffb366;background:#000;z-index:60;font-family:Menlo,monospace;font-size:18px';
+      msg.textContent = 'Rendering interrupted. Tap to try again.';
+      container.appendChild(msg);
+      msg.addEventListener('click', () => location.reload());
+    }, false);
+
+    function showApprovalPopup(data) {
+      activeApprovalId = data.id;
+      approvalAction.textContent = data.action || 'No action provided';
+      approvalReason.textContent = data.reason || 'No reason provided';
+      approvalOverlay.style.display = 'flex';
+    }
+
+    function hideApprovalPopup() {
+      activeApprovalId = null;
+      approvalOverlay.style.display = 'none';
+    }
+
+    let activeApprovalId = null;
+    let currentNotification = '';
+    let notificationTimer = null;
+
+    function showNotification(message) {
+      if (!message) return;
+      if (message === currentNotification) return;
+      currentNotification = message;
+      notificationStrip.textContent = message;
+      notificationStrip.classList.add('visible');
+      clearTimeout(notificationTimer);
+      notificationTimer = setTimeout(() => {
+        notificationStrip.classList.remove('visible');
+      }, 5000);
+    }
+
+    async function pollApprovalStatus() {
+      try {
+        const response = await fetch('/approval/status');
+        const data = await response.json();
+        if (data.pending) {
+          showApprovalPopup(data);
+        } else if (approvalOverlay.style.display === 'flex') {
+          hideApprovalPopup();
+        }
+      } catch (err) {
+        console.warn('Approval poll failed', err);
+      }
+    }
+
+    async function pollNotifications() {
+      try {
+        const response = await fetch('/notifications');
+        const data = await response.json();
+        if (data.messages && data.messages.length > 0) {
+          showNotification(data.messages[data.messages.length - 1]);
+        }
+      } catch (err) {
+        console.warn('Notification poll failed', err);
+      }
+    }
+
+    async function respondApproval(decision) {
+      if (!activeApprovalId) {
+        hideApprovalPopup();
+        return;
+      }
+      try {
+        await fetch('/approval/respond', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: activeApprovalId, decision })
+        });
+      } catch (err) {
+        console.warn('Approval respond failed', err);
+      }
+      hideApprovalPopup();
+    }
+
+    approveButton.addEventListener('click', () => respondApproval('approved'));
+    rejectButton.addEventListener('click', () => respondApproval('rejected'));
+
+    function setStatus(text) {
+      stateLabel.textContent = text;
+    }
+
+    function stopSpeaking() {
+      if ('speechSynthesis' in window && (speechSynthesis.speaking || speechSynthesis.pending)) {
+        speechSynthesis.cancel();
+      }
+    }
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const recognition = SpeechRecognition ? new SpeechRecognition() : null;
+
+    function startListening() {
+      if (!recognition) {
+        setState('idle');
+        return;
+      }
+      try {
+        recognition.start();
+      } catch (err) {
+        console.warn('Recognition start failed', err);
+      }
+    }
+
+    if (recognition) {
+      recognition.lang = 'en-US';
+      recognition.interimResults = false;
+      recognition.maxAlternatives = 1;
+
+      recognition.onstart = () => setState('listening');
+      recognition.onspeechstart = () => setState('listening');
+      recognition.onspeechend = () => {
+        if (currentState === 'listening') {
+          setState('thinking');
+        }
+      };
+      recognition.onnomatch = () => setState('idle');
+      recognition.onerror = () => setState('idle');
+      recognition.onend = () => {
+        if (currentState === 'listening') {
+          setState('idle');
+        }
+      };
+      recognition.onresult = (event) => {
+        const text = event.results[0][0].transcript || '';
+        if (!text) {
+          setState('idle');
+          return;
+        }
+        setState('thinking');
+        fetch('/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: text })
+        })
+        .then(response => response.json())
+        .then(data => {
+          if (data.reply) {
+            stopSpeaking();
+            setState('speaking');
+            const utterance = new SpeechSynthesisUtterance(data.reply);
+            utterance.onstart = () => setState('speaking');
+            utterance.onend = () => setState('idle');
+            utterance.onerror = () => setState('idle');
+            speechSynthesis.speak(utterance);
+          } else {
+            setState('idle');
+          }
+        })
+        .catch(() => setState('idle'));
+      };
+    }
+
+    renderer.domElement.addEventListener('click', () => {
+      if (currentState !== 'speaking') {
+        stopSpeaking();
+        startListening();
+      }
+    });
+
+    setInterval(pollApprovalStatus, 2000);
+    setInterval(pollNotifications, 3000);
+    pollApprovalStatus();
+    pollNotifications();
+    setState('idle');
+    animate();
+  </script>
+</body>
+</html>
